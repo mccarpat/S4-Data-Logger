@@ -54,6 +54,7 @@
  *  
  */ 
  
+ #define USING_SERIAL
  #define DEBOUNCE_TIME 10 // 10 ms, one debounce
  
  #define PIN_BUTTON1 9
@@ -62,8 +63,9 @@
  #define PIN_GREEN_LED 7
  
  boolean Button1_Pressed( void );
+ long count = 0;
  
- int A0_value, A1_value, A2_value, A3_value;
+ float A0_value, A1_value, A2_value, A3_value;
  
  void setup() {
    // Initialize system
@@ -74,19 +76,24 @@
    //**Pin mode for analog reads?
    
    // Initialize serial communication at 9600 bits per second:
+   #ifdef USING_SERIAL
    Serial.begin(9600);
+   #endif
    
    while(1)
    {
      // Primary code loop
-     digitalWrite(PIN_GREEN_LED, Button1_Pressed());  //sets the LED to current state of button
-     digitalWrite(PIN_RED_LED, Button2_Pressed());  //sets the LED to current state of button
+     digitalWrite(PIN_GREEN_LED, Button1_Pressed());  //sets the LED to current state of button each loop
+     digitalWrite(PIN_RED_LED, Button2_Pressed());  //sets the LED to current state of button each loop
      
-     A0_value = analogRead(A0);
-     A1_value = analogRead(A1);
-     A2_value = analogRead(A2);
-     A3_value = analogRead(A3);
+     A0_value = analogRead(A0) * (5.0 / 1023.0);
+     A1_value = analogRead(A1) * (5.0 / 1023.0);
+     A2_value = analogRead(A2) * (5.0 / 1023.0);
+     A3_value = analogRead(A3) * (5.0 / 1023.0);
      
+     #ifdef USING_SERIAL
+     Serial.print(count);
+     Serial.print(": ");
      Serial.print(A0_value);
      Serial.print(", ");
      Serial.print(A1_value);
@@ -95,8 +102,10 @@
      Serial.print(", ");
      Serial.print(A3_value);
      Serial.println("");
+     #endif
      
      delay(1000); // Delay between main loop cycles
+     count++;
    }
  }
  
