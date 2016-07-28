@@ -1,4 +1,4 @@
-#define VERSION "0.0.2"
+#define VERSION "0.0.3"
 #define VERSIONDATE "07-28-16"
 
 /*
@@ -11,6 +11,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+ *  v0.0.3 - PJM - Setting up usage of data[...]
 *   v0.0.2 - PJM -> 07-28-16 - Testing Analog Reads and writing to serial
  *  v0.0.1 - PJM -> 07-25-16 - Rewriting some original code from scratch
  * 
@@ -54,19 +55,32 @@
  *  
  */ 
  
+ // Define system settings
  #define USING_SERIAL
  #define DEBOUNCE_TIME 10 // 10 ms, one debounce
+ #define DATA_LENGTH 20 // Data array has 20 elements
  
+ // Define pins
  #define PIN_BUTTON1 9
  #define PIN_BUTTON2 8
  #define PIN_RED_LED 6
  #define PIN_GREEN_LED 7
  
+ // Define array element positions for data
+ #define pos_Voltage0 0
+ #define pos_Voltage1 1
+ #define pos_Voltage2 2
+ #define pos_Voltage3 3
+ 
+ // Initialize variables
  boolean Button1_Pressed( void );
  long count = 0;
+ word data[DATA_LENGTH] = {0};      // Updated data (e.g. analog inputs or charge controller received data) placed here
+ word olddata[DATA_LENGTH] = {0};   // Previous loops data is stored here for comparison purposes
+ word writedata[DATA_LENGTH] = {0}; // This is the data to be written to the SD card
+ word A0_value, A1_value, A2_value, A3_value;
  
- float A0_value, A1_value, A2_value, A3_value;
- 
+ // Main program
  void setup() {
    // Initialize system
    pinMode(PIN_BUTTON1, INPUT);
@@ -80,45 +94,60 @@
    Serial.begin(9600);
    #endif
    
+   // Primary code loop
    while(1)
    {
-     // Primary code loop
+     // Update olddate to have the previous loop's data
+     for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
+       olddata[i] = data[i];
+     }
+     
+     // Set the LEDs to the current state of the buttons
      digitalWrite(PIN_GREEN_LED, Button1_Pressed());  //sets the LED to current state of button each loop
      digitalWrite(PIN_RED_LED, Button2_Pressed());  //sets the LED to current state of button each loop
      
-     A0_value = analogRead(A0) * (5.0 / 1023.0);
-     A1_value = analogRead(A1) * (5.0 / 1023.0);
-     A2_value = analogRead(A2) * (5.0 / 1023.0);
-     A3_value = analogRead(A3) * (5.0 / 1023.0);
+     // Read in the analog voltages (Example: 2.34 volts yields a value of 234)
+     A0_value = float(analogRead(A0) * (5.0 / 1023.0)) * 100.0;
+     A1_value = float(analogRead(A1) * (5.0 / 1023.0)) * 100.0;
+     A2_value = float(analogRead(A2) * (5.0 / 1023.0)) * 100.0;
+     A3_value = float(analogRead(A3) * (5.0 / 1023.0)) * 100.0;
+     data[pos_Voltage0] = A0_value;
+     data[pos_Voltage1] = A1_value;
+     data[pos_Voltage2] = A2_value;
+     data[pos_Voltage3] = A3_value;
      
+     // Print to the serial monitor if being used
      #ifdef USING_SERIAL
      Serial.print(count);
      Serial.print(": ");
-     Serial.print(A0_value);
+     Serial.print(data[pos_Voltage0]);
      Serial.print(", ");
-     Serial.print(A1_value);
+     Serial.print(data[pos_Voltage1]);
      Serial.print(", ");
-     Serial.print(A2_value);
+     Serial.print(data[pos_Voltage2]);
      Serial.print(", ");
-     Serial.print(A3_value);
+     Serial.print(data[pos_Voltage3]);
      Serial.println("");
      #endif
      
-     delay(1000); // Delay between main loop cycles
+     // Increment count
      count++;
+     
+     // Delay before next loop iteration
+     delay(1000); // Delay between main loop cycles
+     
    }
  }
  
  
- void loop() {
-   // Nothing here
- }
+
  
 
 // **************************************************************************************
 // ******************************** COMPLETE FUNCTIONS **********************************
 // **************************************************************************************
 
+  // Single debounce check if Button1 is pressed (no depressed debounce)
   boolean Button1_Pressed( void ) {
     if(digitalRead(PIN_BUTTON1)) {
       delay(DEBOUNCE_TIME);
@@ -129,6 +158,7 @@
     return false;
   }
   
+  // Single debounce check if Button2 is pressed (no depressed debounce)
   boolean Button2_Pressed( void ) {
     if(digitalRead(PIN_BUTTON2)) {
       delay(DEBOUNCE_TIME);
@@ -137,4 +167,9 @@
       }
     }
     return false;
+  }
+  
+  // Satisfy the Arduino compiler
+  void loop() {
+    // Nothing here
   }
