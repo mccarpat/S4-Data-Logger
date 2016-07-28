@@ -1,6 +1,5 @@
-#define VERSION "0.0.1"
-#define VERSIONDATE "07-25-16"
-//temptestline
+#define VERSION "0.0.2"
+#define VERSIONDATE "07-28-16"
 
 /*
  *  S4-Logger
@@ -12,6 +11,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+*   v0.0.2 - PJM -> 07-28-16 - Testing Analog Reads and writing to serial
  *  v0.0.1 - PJM -> 07-25-16 - Rewriting some original code from scratch
  * 
  *  --- Pins ------------------------
@@ -54,10 +54,16 @@
  *  
  */ 
  
+ #define DEBOUNCE_TIME 10 // 10 ms, one debounce
+ 
  #define PIN_BUTTON1 9
  #define PIN_BUTTON2 8
  #define PIN_RED_LED 6
  #define PIN_GREEN_LED 7
+ 
+ boolean Button1_Pressed( void );
+ 
+ int A0_value, A1_value, A2_value, A3_value;
  
  void setup() {
    // Initialize system
@@ -65,14 +71,32 @@
    pinMode(PIN_BUTTON2, INPUT);
    pinMode(PIN_RED_LED, OUTPUT);
    pinMode(PIN_GREEN_LED, OUTPUT);
+   //**Pin mode for analog reads?
    
+   // Initialize serial communication at 9600 bits per second:
+   Serial.begin(9600);
    
    while(1)
    {
      // Primary code loop
-     digitalWrite(PIN_GREEN_LED, digitalRead(PIN_BUTTON1));  //sets the LED to current state of button
-     digitalWrite(PIN_RED_LED, digitalRead(PIN_BUTTON2));  //sets the LED to current state of button
-     delay(5); // delay to not burn out cpu
+     digitalWrite(PIN_GREEN_LED, Button1_Pressed());  //sets the LED to current state of button
+     digitalWrite(PIN_RED_LED, Button2_Pressed());  //sets the LED to current state of button
+     
+     A0_value = analogRead(A0);
+     A1_value = analogRead(A1);
+     A2_value = analogRead(A2);
+     A3_value = analogRead(A3);
+     
+     Serial.print(A0_value);
+     Serial.print(", ");
+     Serial.print(A1_value);
+     Serial.print(", ");
+     Serial.print(A2_value);
+     Serial.print(", ");
+     Serial.print(A3_value);
+     Serial.println("");
+     
+     delay(1000); // Delay between main loop cycles
    }
  }
  
@@ -80,3 +104,28 @@
  void loop() {
    // Nothing here
  }
+ 
+
+// **************************************************************************************
+// ******************************** COMPLETE FUNCTIONS **********************************
+// **************************************************************************************
+
+  boolean Button1_Pressed( void ) {
+    if(digitalRead(PIN_BUTTON1)) {
+      delay(DEBOUNCE_TIME);
+      if(digitalRead(PIN_BUTTON1)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  boolean Button2_Pressed( void ) {
+    if(digitalRead(PIN_BUTTON2)) {
+      delay(DEBOUNCE_TIME);
+      if(digitalRead(PIN_BUTTON2)) {
+        return true;
+      }
+    }
+    return false;
+  }
