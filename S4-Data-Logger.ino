@@ -1,15 +1,16 @@
-#define VERSION "0.0.5"
+#define VERSION "0.0.6"
 #define VERSIONDATE "07-29-16"
 
 /* Places program can get stuck:
-   - Initializing the SD card if failure
+   - Initializing the SD card if failure -> RRRRGGxxxxx...
      InitializeSDCard(); // Fail loop: Red 400, green 200, Off 500.    Success loop:  Green 250 x 3
-   - Opening the datafile if failure or if no SD card present
+   - Opening the datafile if failure or if no SD card present -> RRxRRGGxxx...
      WriteDataToSDCard();   // Fail: Red 200, off 100, Red 200, Green 200, off 300   Sucess: Green 250
-   - Waiting for SD card to be ejected after holding the button. Solid green light.
-   - Waiting for SD card to be reinserted after ejected. Blinking green light. On/Off 500ms.
+   - Waiting for SD card to be ejected after holding the button. Solid green light. -> G...
+   - Waiting for SD card to be reinserted after ejected. Blinking green light. On/Off 500ms. ->  GGGGGxxxxxGGGGGxxxxx...
 */
 
+// https://gist.github.com/jenschr/5713c927c3fb8663d662
 
 /* STATUS:
     Ok so all it does right now is write the four analogreads (voltage of 2.56 is a word  = 256)
@@ -27,6 +28,7 @@
     - Add a watchdog timer? Maybe have it write to the card "watchdog" if "watchdog" not found in last 100 lines or whatever.
     - Make it so that if anything errors and requires a reset (e.g. sd card won't initialize) red LED goes on
     - Write short manual for what to do for when red LED is on, and then for how to swap cards, etc.
+    - REDO ALL OF THE ABOVE:  Write wall logger.
 */
 
 /*
@@ -39,6 +41,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+ *  v0.0.6 - PJM - (working on adding a watchdog timer reset so it can continue to write after an eject, then adding formatting)
  *  v0.0.5 - PJM -> 07-29-16 - SD Card writing (dummy data) and safe eject
  *  v0.0.4 - PJM - (working on data compression and delta tolerance) (not done, skipping)
  *  v0.0.3 - PJM - Setting up usage of data[...]
@@ -221,6 +224,9 @@
  // Writes data[...] to the SD card, and handles error loop (light codes) if necessary    
  void WriteDataToSDCard( void ) {
    
+   // Turn on RED LED to indicate working on the SD Card
+   RED_LED_ON;
+   
    // Open the file
    File dataFile = SD.open(LOG_FILE_NAME, FILE_WRITE);
    if(!dataFile){ error_status = 1; } else { error_status = 0; }
@@ -245,10 +251,8 @@
      Serial.println(": line of data");
      #endif
      
-     // Flash success
-     GREEN_LED_ON;
-     delay(250);
-     GREEN_LED_OFF;
+     // Turn off RED LED to indicate being done with SD Card
+     RED_LED_OFF;
      
    } else {
      
