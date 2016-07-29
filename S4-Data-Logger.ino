@@ -1,5 +1,23 @@
-#define VERSION "0.0.3"
+#define VERSION "0.0.4"
 #define VERSIONDATE "07-28-16"
+
+/* STATUS:
+    Ok so all it does right now is write the four analogreads (voltage of 2.56 is a word  = 256)
+    to the serial. Next, you should
+    - Implement data tolerance and compression (e.g. the whole thing where if the new value is within tolerance of the old one, just say it is the old value, and if it is the old value, say it is "x". Then look at the line, and replace "x,"'s with a, b, c... e.g.   "x,x,x," => "c" (a=1, b=2, c=3).
+    - Write to the SD card
+    - Have system sleep between readings, verify that it still functions
+    - Implement SD card stopping, ejecting, formatting, error handling
+    - Create MAX485 circuit
+    - Connect (S4) the resistors and connect them to the analog inputs. Test/Verify.
+    - Connect MAX485 to CC, verify that it can read data (use Sofia's code with pin # changes)
+    - Code data retrieval from CC, including error handling
+    - Write all of this data to the SD card
+    - Verify that sleeping between cycles does not interfere with anything
+    - Add a watchdog timer? Maybe have it write to the card "watchdog" if "watchdog" not found in last 100 lines or whatever.
+    - Make it so that if anything errors and requires a reset (e.g. sd card won't initialize) red LED goes on
+    - Write short manual for what to do for when red LED is on, and then for how to swap cards, etc.
+*/
 
 /*
  *  S4-Logger
@@ -11,24 +29,14 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+ *  v0.0.4 - PJM - (working on data compression and delta tolerance) (not done, skipping)
  *  v0.0.3 - PJM - Setting up usage of data[...]
-*   v0.0.2 - PJM -> 07-28-16 - Testing Analog Reads and writing to serial
+ *  v0.0.2 - PJM -> 07-28-16 - Testing Analog Reads and writing to serial
  *  v0.0.1 - PJM -> 07-25-16 - Rewriting some original code from scratch
  * 
  *  --- Pins ------------------------
  *  // //PC4/A4 (SDA)  -> RTC SDA
  *  // //PC5/A5 (SCL)  -> RTC SCL
- *  // //D2/PD2        -> G of 33N10 (N-channel)
- *  // //A3/PC3        -> Voltage at top of AA battery.
- *  // //A2/PC2        -> Voltage at GND of AA battery.
- *  // //D9 / PB1       -> Red LED
- *  // D7 / PD7 / PCINT23       -> Red LED
- *  // D3 / PD3       -> Green LED
- *  // //PD6       -> Blue LED
- *  // //D7 / PD7 / PCINT23       -> Button 1 
- *  // D9 / PB1 / PCINT1       -> Button 1
- *  // D8 / PB0 / PCINT0      -> Button 2
- *  // A0  / PC0      -> Potentiometer
  *
  *
  *  D13 / PB5 / 13 / SCK        -        SD CLK
@@ -50,15 +58,21 @@
  *  
  *  //- Need to find two pins that can be pulled up/down to identify unique logging units
  *  //- Supercap calc:  http://electronics.stackexchange.com/questions/4951/how-do-i-calculate-how-fast-a-capacitor-will-discharge
- *  //- When power dies, write to EEPROM, not SD card.  Then move that to SD card when you ahve power.
+ *  //- For wall logger, each loop write data to a variable. When power dies, write variables to EEPROM, not SD card.  Then move that to SD card when you ahve power.
  *  
- *  
+ *  // STILL TO ADD -   Tolerance and data compression
  */ 
  
  // Define system settings
  #define USING_SERIAL
  #define DEBOUNCE_TIME 10 // 10 ms, one debounce
  #define DATA_LENGTH 20 // Data array has 20 elements
+ // #define DUPLICATE 'x' // Character used to represent duplicate data from a previous write cycle
+ //#define tolerance_Voltage0 5 // If the new reading is within X of the previously recorded reading, do not write new data
+ //#define tolerance_Voltage1 5 
+ //#define tolerance_Voltage2 5 
+ //#define tolerance_Voltage3 5 
+ 
  
  // Define pins
  #define PIN_BUTTON1 9
@@ -72,12 +86,18 @@
  #define pos_Voltage2 2
  #define pos_Voltage3 3
  
- // Initialize variables
+ // Declare functions
  boolean Button1_Pressed( void );
+ void MoveDataToOldData( void );
+ void ReadAnalogVoltages( void );  // Update AnalogRead voltages and data[...]
+ void UpdateWriteData( void );  // Updates writedata based upon data && olddata, and updates holddata
+ 
+ // Initialize variables
  long count = 0;
- word data[DATA_LENGTH] = {0};      // Updated data (e.g. analog inputs or charge controller received data) placed here
- word olddata[DATA_LENGTH] = {0};   // Previous loops data is stored here for comparison purposes
- word writedata[DATA_LENGTH] = {0}; // This is the data to be written to the SD card
+ word data[DATA_LENGTH] = {0};          // Updated data (e.g. analog inputs or charge controller received data) placed here
+ word olddata[DATA_LENGTH] = {0};       // Previous loops data is stored here for comparison purposes
+ //word writedata[DATA_LENGTH] = {0};     // This is the data to be written to the SD card (e.g. olddata="5,2,1" && data="4,3,1" -> writedata="4,3,x")
+ //word holddata[DATA_LENGTH] = {0};      // This is the data that any "old" writedata represents (cont. above e.g.: writedata="4,3,1")
  word A0_value, A1_value, A2_value, A3_value;
  
  // Main program
@@ -87,7 +107,6 @@
    pinMode(PIN_BUTTON2, INPUT);
    pinMode(PIN_RED_LED, OUTPUT);
    pinMode(PIN_GREEN_LED, OUTPUT);
-   //**Pin mode for analog reads?
    
    // Initialize serial communication at 9600 bits per second:
    #ifdef USING_SERIAL
@@ -97,24 +116,15 @@
    // Primary code loop
    while(1)
    {
-     // Update olddate to have the previous loop's data
-     for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
-       olddata[i] = data[i];
-     }
      
-     // Set the LEDs to the current state of the buttons
+     MoveDataToOldData();  // Updates olddata to be the previous cycle's data
+     
      digitalWrite(PIN_GREEN_LED, Button1_Pressed());  //sets the LED to current state of button each loop
      digitalWrite(PIN_RED_LED, Button2_Pressed());  //sets the LED to current state of button each loop
      
-     // Read in the analog voltages (Example: 2.34 volts yields a value of 234)
-     A0_value = float(analogRead(A0) * (5.0 / 1023.0)) * 100.0;
-     A1_value = float(analogRead(A1) * (5.0 / 1023.0)) * 100.0;
-     A2_value = float(analogRead(A2) * (5.0 / 1023.0)) * 100.0;
-     A3_value = float(analogRead(A3) * (5.0 / 1023.0)) * 100.0;
-     data[pos_Voltage0] = A0_value;
-     data[pos_Voltage1] = A1_value;
-     data[pos_Voltage2] = A2_value;
-     data[pos_Voltage3] = A3_value;
+     ReadAnalogVoltages();  // Update AnalogRead voltages and data[...]
+     
+     //UpdateWriteData();  // Updates writedata based upon data && olddata, and updates holddata
      
      // Print to the serial monitor if being used
      #ifdef USING_SERIAL
@@ -139,7 +149,34 @@
    }
  }
  
- 
+     
+     
+     
+     
+  
+  // Updates writedata based upon data && olddata, and updates holddata
+  void UpdateWriteData( void ) {
+    
+    //for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
+    //  olddata[i] = data[i];
+    //}
+    
+    //if(abs(data[pos_Voltage0]-holddata[pos_Voltage0])<=tolerance_Voltage0) {
+    //  // Within tolerance
+    //  writedata[pos_Voltage0] = DUPLICATE;
+    //} else {
+    //  // Out of tolerance
+    //}
+    
+  }
+     
+     
+     
+     
+     
+     
+
+
 
  
 
@@ -172,4 +209,24 @@
   // Satisfy the Arduino compiler
   void loop() {
     // Nothing here
+  }
+  
+  // Updates olddata to be the previous cycle's data
+  void MoveDataToOldData( void ) {
+    for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
+      olddata[i] = data[i];
+    }
+  }
+  
+  // Update AnalogRead voltages and data[...]
+  void ReadAnalogVoltages( void ) {
+   // Read in the analog voltages (Example: 2.34 volts yields a value of 234)
+   A0_value = float(analogRead(A0) * (5.0 / 1023.0)) * 100.0;
+   A1_value = float(analogRead(A1) * (5.0 / 1023.0)) * 100.0;
+   A2_value = float(analogRead(A2) * (5.0 / 1023.0)) * 100.0;
+   A3_value = float(analogRead(A3) * (5.0 / 1023.0)) * 100.0;
+   data[pos_Voltage0] = A0_value;
+   data[pos_Voltage1] = A1_value;
+   data[pos_Voltage2] = A2_value;
+   data[pos_Voltage3] = A3_value;
   }
