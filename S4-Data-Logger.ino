@@ -1,5 +1,15 @@
-#define VERSION "0.0.4"
-#define VERSIONDATE "07-28-16"
+#define VERSION "0.0.5"
+#define VERSIONDATE "07-29-16"
+
+/* Places program can get stuck:
+   - Initializing the SD card if failure
+     InitializeSDCard(); // Fail loop: Red 400, green 200, Off 500.    Success loop:  Green 250 x 3
+   - Opening the datafile if failure or if no SD card present
+     WriteDataToSDCard();   // Fail: Red 200, off 100, Red 200, Green 200, off 300   Sucess: Green 250
+   - Waiting for SD card to be ejected after holding the button. Solid green light.
+   - Waiting for SD card to be reinserted after ejected. Blinking green light. On/Off 500ms.
+*/
+
 
 /* STATUS:
     Ok so all it does right now is write the four analogreads (voltage of 2.56 is a word  = 256)
@@ -29,6 +39,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+ *  v0.0.5 - PJM -> 07-29-16 - SD Card writing (dummy data) and safe eject
  *  v0.0.4 - PJM - (working on data compression and delta tolerance) (not done, skipping)
  *  v0.0.3 - PJM - Setting up usage of data[...]
  *  v0.0.2 - PJM -> 07-28-16 - Testing Analog Reads and writing to serial
@@ -60,25 +71,37 @@
  *  //- Supercap calc:  http://electronics.stackexchange.com/questions/4951/how-do-i-calculate-how-fast-a-capacitor-will-discharge
  *  //- For wall logger, each loop write data to a variable. When power dies, write variables to EEPROM, not SD card.  Then move that to SD card when you ahve power.
  *  
- *  // STILL TO ADD -   Tolerance and data compression
+ *  // 07-29-16 Note: When writing to card, currently no differentiation between an error opening dataFile or if a card is not present. Same error result.
  */ 
  
  // Define system settings
  #define USING_SERIAL
  #define DEBOUNCE_TIME 10 // 10 ms, one debounce
  #define DATA_LENGTH 20 // Data array has 20 elements
+ #define LOG_FILE_NAME "datalog.txt"
+ #define SAFE_SDCARD_EJECT_BUTTON_HOLD_SECONDS 3 // 3 seconds of holding button1 to safely eject
  // #define DUPLICATE 'x' // Character used to represent duplicate data from a previous write cycle
  //#define tolerance_Voltage0 5 // If the new reading is within X of the previously recorded reading, do not write new data
  //#define tolerance_Voltage1 5 
  //#define tolerance_Voltage2 5 
  //#define tolerance_Voltage3 5 
- 
- 
+
  // Define pins
  #define PIN_BUTTON1 9
  #define PIN_BUTTON2 8
  #define PIN_RED_LED 6
  #define PIN_GREEN_LED 7
+ #define PIN_SD_CS 10
+ #define PIN_SD_CD 4
+ 
+ // Define "functions"
+ #define RED_LED_ON digitalWrite(PIN_RED_LED, 1)
+ #define RED_LED_OFF digitalWrite(PIN_RED_LED, 0)
+ #define GREEN_LED_ON digitalWrite(PIN_GREEN_LED, 1)
+ #define GREEN_LED_OFF digitalWrite(PIN_GREEN_LED, 0)
+ #define SD_CARD_IS_PRESENT digitalRead(PIN_SD_CD)
+ //#define error 1
+ //#define good 0
  
  // Define array element positions for data
  #define pos_Voltage0 0
@@ -86,11 +109,18 @@
  #define pos_Voltage2 2
  #define pos_Voltage3 3
  
+ // Includes
+ #include <SD.h>
+ 
  // Declare functions
  boolean Button1_Pressed( void );
  void MoveDataToOldData( void );
  void ReadAnalogVoltages( void );  // Update AnalogRead voltages and data[...]
  void UpdateWriteData( void );  // Updates writedata based upon data && olddata, and updates holddata
+ void InitializeSDCard( void );  // Initializes the SD card interface, and handles error loop (light codes) if necessary
+ void WriteDataToSDCard( void ); // Writes data[...] to the SD card, and handles error loop (light codes) if necessary
+ void HandleSDCardSwap( void ); // Handles waiting for the SD card to be ejected and another one inserted.
+ void EjectRequestCheckAndHandler( void ); // Checks if the users wants to eject the SD card and handles this process
  
  // Initialize variables
  long count = 0;
@@ -99,6 +129,10 @@
  //word writedata[DATA_LENGTH] = {0};     // This is the data to be written to the SD card (e.g. olddata="5,2,1" && data="4,3,1" -> writedata="4,3,x")
  //word holddata[DATA_LENGTH] = {0};      // This is the data that any "old" writedata represents (cont. above e.g.: writedata="4,3,1")
  word A0_value, A1_value, A2_value, A3_value;
+ byte error_status = 0;
+ byte GoodToEject = 0;
+ //boolean Button1_Pressed = false;
+ //boolean Button2_Pressed = false;
  
  // Main program
  void setup() {
@@ -107,24 +141,36 @@
    pinMode(PIN_BUTTON2, INPUT);
    pinMode(PIN_RED_LED, OUTPUT);
    pinMode(PIN_GREEN_LED, OUTPUT);
+   pinMode(PIN_SD_CS, OUTPUT);
+   pinMode(PIN_SD_CD, INPUT);
    
    // Initialize serial communication at 9600 bits per second:
    #ifdef USING_SERIAL
    Serial.begin(9600);
    #endif
    
+   InitializeSDCard(); // Fail loop: Red 400, green 200, Off 500.    Success loop:  Green 250 x 3
+  
    // Primary code loop
    while(1)
    {
      
      MoveDataToOldData();  // Updates olddata to be the previous cycle's data
      
-     digitalWrite(PIN_GREEN_LED, Button1_Pressed());  //sets the LED to current state of button each loop
-     digitalWrite(PIN_RED_LED, Button2_Pressed());  //sets the LED to current state of button each loop
+     //digitalWrite(PIN_GREEN_LED, Button1_Pressed());  //sets the LED to current state of button each loop
+     //digitalWrite(PIN_RED_LED, Button2_Pressed());  //sets the LED to current state of button each loop
+     
+     
+     // Safely eject if Button1 is pressed for X seconds
+     EjectRequestCheckAndHandler(); // Checks if the users wants to eject the SD card and handles this process
+     
+     
      
      ReadAnalogVoltages();  // Update AnalogRead voltages and data[...]
      
      //UpdateWriteData();  // Updates writedata based upon data && olddata, and updates holddata
+     
+     WriteDataToSDCard();   // Fail: Red 200, off 100, Red 200, Green 200, off 300   Sucess: Green 250
      
      // Print to the serial monitor if being used
      #ifdef USING_SERIAL
@@ -153,22 +199,12 @@
      
      
      
-  
-  // Updates writedata based upon data && olddata, and updates holddata
-  void UpdateWriteData( void ) {
-    
-    //for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
-    //  olddata[i] = data[i];
-    //}
-    
-    //if(abs(data[pos_Voltage0]-holddata[pos_Voltage0])<=tolerance_Voltage0) {
-    //  // Within tolerance
-    //  writedata[pos_Voltage0] = DUPLICATE;
-    //} else {
-    //  // Out of tolerance
-    //}
-    
-  }
+     
+     
+
+     
+     
+
      
      
      
@@ -176,50 +212,151 @@
      
      
 
-
-
+   
+     
+     
+     
+     
+     
+ // Writes data[...] to the SD card, and handles error loop (light codes) if necessary    
+ void WriteDataToSDCard( void ) {
+   
+   // Open the file
+   File dataFile = SD.open(LOG_FILE_NAME, FILE_WRITE);
+   if(!dataFile){ error_status = 1; } else { error_status = 0; }
+   //if(SD_CARD_IS_PRESENT) {error_status = 0; } else { error_status = 1; }
+   if(SD_CARD_IS_PRESENT) {error_status |= 0; } else { error_status |= 1; }
+   
+   #ifdef USING_SERIAL
+   Serial.print(count);
+   Serial.print(": error_status: ");
+   Serial.println(error_status);
+   #endif
+   
+   if (!error_status) {
+     // File opened
+     dataFile.print(count);
+     dataFile.println(": line of data");
+     dataFile.close();
+     
+     // Print to Serial Monitor
+     #ifdef USING_SERIAL
+     Serial.print(count);
+     Serial.println(": line of data");
+     #endif
+     
+     // Flash success
+     GREEN_LED_ON;
+     delay(250);
+     GREEN_LED_OFF;
+     
+   } else {
+     
+     // Unable to open file
+     #ifdef USING_SERIAL
+     Serial.println("error opening datalog.txt");
+     #endif
+     
+     // Wait until file can be opened
+     while(error_status) { // Red 200, off 100, Red 200, Green 200, off 300
+       RED_LED_ON;
+       delay(200);
+       RED_LED_OFF;
+       delay(100);
+       RED_LED_ON;
+       delay(200);
+       RED_LED_OFF;
+       GREEN_LED_ON;
+       delay(200);
+       GREEN_LED_OFF;
+       delay(300);
+       File dataFile = SD.open(LOG_FILE_NAME, FILE_WRITE);
+       if(!dataFile){ error_status = 1; } else { error_status = 0; }
+       if(SD_CARD_IS_PRESENT) {error_status |= 0; } else { error_status |= 1; }
+     }
+   } 
+   
+   /*for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
+     olddata[i] = data[i];
+   }*/
+ }  
+     
+     
  
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+     
+  
+ // Updates writedata based upon data && olddata, and updates holddata
+ void UpdateWriteData( void ) {
+    
+   //for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
+   //  olddata[i] = data[i];
+   //}
+    
+   //if(abs(data[pos_Voltage0]-holddata[pos_Voltage0])<=tolerance_Voltage0) {
+   //  // Within tolerance
+   //  writedata[pos_Voltage0] = DUPLICATE;
+   //} else {
+   //  // Out of tolerance
+   //}
+    
+ }
+     
 
 // **************************************************************************************
 // ******************************** COMPLETE FUNCTIONS **********************************
 // **************************************************************************************
 
-  // Single debounce check if Button1 is pressed (no depressed debounce)
-  boolean Button1_Pressed( void ) {
-    if(digitalRead(PIN_BUTTON1)) {
-      delay(DEBOUNCE_TIME);
-      if(digitalRead(PIN_BUTTON1)) {
-        return true;
-      }
-    }
-    return false;
-  }
+
+ // Single debounce check if Button1 is pressed (no depressed debounce)
+ boolean Button1_Pressed( void ) {
+   if(digitalRead(PIN_BUTTON1)) {
+     delay(DEBOUNCE_TIME);
+     if(digitalRead(PIN_BUTTON1)) {
+       return true;
+     }
+   }
+   return false;
+ }
   
-  // Single debounce check if Button2 is pressed (no depressed debounce)
-  boolean Button2_Pressed( void ) {
-    if(digitalRead(PIN_BUTTON2)) {
-      delay(DEBOUNCE_TIME);
-      if(digitalRead(PIN_BUTTON2)) {
-        return true;
-      }
-    }
-    return false;
-  }
   
-  // Satisfy the Arduino compiler
-  void loop() {
-    // Nothing here
-  }
+ // Single debounce check if Button2 is pressed (no depressed debounce)
+ boolean Button2_Pressed( void ) {
+   if(digitalRead(PIN_BUTTON2)) {
+     delay(DEBOUNCE_TIME);
+     if(digitalRead(PIN_BUTTON2)) {
+       return true;
+     }
+   }
+   return false;
+ }
   
-  // Updates olddata to be the previous cycle's data
-  void MoveDataToOldData( void ) {
-    for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
-      olddata[i] = data[i];
-    }
-  }
   
-  // Update AnalogRead voltages and data[...]
-  void ReadAnalogVoltages( void ) {
+ // Satisfy the Arduino compiler
+ void loop() {
+   // Nothing here
+ }
+  
+  
+ // Updates olddata to be the previous cycle's data
+ void MoveDataToOldData( void ) {
+   for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
+     olddata[i] = data[i];
+   }
+ }
+  
+  
+ // Update AnalogRead voltages and data[...]
+ void ReadAnalogVoltages( void ) {
    // Read in the analog voltages (Example: 2.34 volts yields a value of 234)
    A0_value = float(analogRead(A0) * (5.0 / 1023.0)) * 100.0;
    A1_value = float(analogRead(A1) * (5.0 / 1023.0)) * 100.0;
@@ -229,4 +366,98 @@
    data[pos_Voltage1] = A1_value;
    data[pos_Voltage2] = A2_value;
    data[pos_Voltage3] = A3_value;
-  }
+ }
+ 
+ 
+ // Initializes the SD card interface and handles error loop if there is a problem  
+ void InitializeSDCard( void ) {
+   // see if the card is present and can be initialized:
+   error_status = !SD.begin(PIN_SD_CS);
+   if (error_status) {
+     #ifdef USING_SERIAL
+     Serial.println("Card failed, or not present");
+     #endif
+     
+     while(error_status) {
+       RED_LED_ON;
+       delay(500);
+       RED_LED_OFF;
+       GREEN_LED_ON;
+       delay(200);
+       GREEN_LED_OFF;
+       delay(300);
+       error_status = !SD.begin(PIN_SD_CS);
+     }
+     
+   }
+   #ifdef USING_SERIAL
+   Serial.println("Card initialized.");
+   #endif
+   
+   GREEN_LED_ON;
+   delay(250);
+   GREEN_LED_OFF;
+   delay(250);
+   GREEN_LED_ON;
+   delay(250);
+   GREEN_LED_OFF;
+   delay(250);
+   GREEN_LED_ON;
+   delay(250);
+   GREEN_LED_OFF; 
+ }
+ 
+ 
+ // Handles waiting for the SD card to be ejected and another one inserted.
+ void HandleSDCardSwap( void ) {
+
+   // Wait until card is ejected
+   GREEN_LED_ON;
+   RED_LED_OFF;
+   while(SD_CARD_IS_PRESENT) {
+     // We're just waiting for the card to be ejected. That's it. Hopefully somebody ejects it.
+     delay(500);
+   }
+   
+   // Wait until a card is inserted
+   while(!SD_CARD_IS_PRESENT) {
+     // We're just waiting for the card to be inserted. That's it. Hopefully somebody puts one in.
+     GREEN_LED_OFF;
+     delay(500);
+     GREEN_LED_ON;
+     delay(500);
+   }
+   
+   // Do you have to reinitialize the SD card? May need to force a watchdog timer reset.
+   RED_LED_OFF;
+   GREEN_LED_OFF;
+ }
+     
+     
+ // Checks if the users wants to eject the SD card and handles this process
+ void EjectRequestCheckAndHandler( void ) { 
+   if(Button1_Pressed()) {
+       RED_LED_ON;
+       GREEN_LED_OFF;
+       
+       // The following is a simple debounce for X seconds, checking once a second if the button is held down.
+       for( byte i = 0 ; i < SAFE_SDCARD_EJECT_BUTTON_HOLD_SECONDS ; ++i ){
+         delay(1000);
+         GoodToEject = 1;
+         if(!Button1_Pressed()) {
+           // Button 1 is not held down!
+           GoodToEject = 0;
+           break;
+         }
+       }
+       
+       if(GoodToEject) {
+           // Good to eject, button was pressed each check over X seconds
+           HandleSDCardSwap(); // Handles waiting for the SD card to be ejected and another one inserted.
+         } else {
+           // Not good to eject, button wasn't held, do nothing
+       }
+       
+       GoodToEject = 0;
+   }    
+ }
