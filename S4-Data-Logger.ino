@@ -1,13 +1,21 @@
-#define VERSION "0.0.6"
+#define VERSION "0.0.7"
 #define VERSIONDATE "07-29-16"
+//#define __AVR_ATmega328P__
 
-/*   CURRENT ISSUE
+
+/*   CURRENT ISSUE half fixed, reset button issued, must code below handling. flashes red/green waiting for user rest on button 3.
    
-     wdt doesn't disable on a rest. it actually sets to 15ms. so it gets stuck in a loop.
-     either find a different software reset solution, or fix this.
-     http://electronics.stackexchange.com/questions/151865/why-does-my-avr-reset-when-i-call-wdt-disable-to-try-to-turn-the-watchdog-time
+     //wdt doesn't disable on a rest. it actually sets to 15ms. so it gets stuck in a loop.
+     ///either find a different software reset solution, or fix this.
+    // http://electronics.stackexchange.com/questions/151865/why-does-my-avr-reset-when-i-call-wdt-disable-to-try-to-turn-the-watchdog-time
 
 
+      Add a third button, physically a reset button. After SD card is reinserted, have it alternate red/green. User must press "button 3" (reset)
+      to continue. Still utilize buttons 1 and 2 to format.   During the BUtton1 debounce for ejecting, have it look for button 2 as well, in case
+      the user goes to press both buttons and presses one of them first.   OR, instruct the user to press Button 2, wait for something, then
+      simultaneously button 1. Or 2, have it hold, and then they press 1 to format, 3 to cancel (literally just a reset).
+      (Redraw circuit, etc)
+      
 */
 
 
@@ -20,6 +28,7 @@
      WriteDataToSDCard();   // Fail: Red 200, off 100, Red 200, Green 200, off 300   Sucess: Green 250
    - Waiting for SD card to be ejected after holding the button. Solid green light. -> G...
    - Waiting for SD card to be reinserted after ejected. Blinking green light. On/Off 500ms. ->  GGGGGxxxxxGGGGGxxxxx...
+   - Waiting for user to physically reset system via a physical reset after inserting new SD card.    RRRRRGGGGGRRRRRGGGGG...
 */
 
 // https://gist.github.com/jenschr/5713c927c3fb8663d662
@@ -53,6 +62,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+  * v0.0.7 - PJM - see "issues" in code
  *  v0.0.6 - PJM - (working on adding a watchdog timer reset so it can continue to write after an eject, then adding formatting)
  *  v0.0.5 - PJM -> 07-29-16 - SD Card writing (dummy data) and safe eject
  *  v0.0.4 - PJM - (working on data compression and delta tolerance) (not done, skipping)
@@ -128,7 +138,7 @@
  // Includes
  #include <SD.h>
  #include <avr/interrupt.h>
- #include <avr/wdt.h>
+ //#include <avr/wdt.h>
  
  // Declare functions
  boolean Button1_Pressed( void );
@@ -156,8 +166,8 @@
  void setup() {
    
    // Immediately disable the watchdog timer so as not to get stuck in a loop
-   MCUSR = 0;
-   wdt_disable();
+   //MCUSR = 0;
+   //wdt_disable();
    //MCUSR &= ~(1<<WDRF);
    //WDTCSR |= (1<<WDCE) | (1<<WDE);
    //WDTCSR = 0x00;
@@ -318,9 +328,9 @@
      
  
      
- void SoftReset( void );
+ /*void SoftReset( void );
  void SoftReset( void ) {
-   wdt_enable(WDTO_1S);
+   //wdt_enable(WDTO_1S);
    // Watchdog Timer set up in reset mode with 1s timeout
    //WDTCSR |= (1<<WDCE) | (1<<WDE);   // Set Change Enable bit and Enable Watchdog System Reset Mode.
    //WDTCSR = (1<<WDE) | (1<<WDIE) | (0<<WDP3 )|(1<<WDP2 )|(1<<WDP1)|(0<<WDP0);
@@ -330,7 +340,7 @@
    while(1){
      // This hurts to write
    }
- }  
+ }  */
      
  //ISR(WDT_vect) {
  //  RED_LED_ON;
@@ -480,7 +490,17 @@
    GREEN_LED_OFF;
    
    // Only way to reinitialize the file, without modifying sd.cpp, is a soft reset
-   SoftReset();
+   //SoftReset();
+   // * * * * * HERE IS WHERE THINGS HAVE BROKEN ^ ^ ^
+   
+   while(1) {
+     GREEN_LED_ON;
+     RED_LED_OFF;
+     delay(500);
+     RED_LED_ON;
+     GREEN_LED_OFF;
+     delay(500);
+   }
  }
      
      
