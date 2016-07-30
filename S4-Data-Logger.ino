@@ -1,5 +1,5 @@
 #define VERSION "0.0.7"
-#define VERSIONDATE "07-29-16"
+#define VERSIONDATE "07-30-16"
 //#define __AVR_ATmega328P__
 
 
@@ -62,7 +62,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
-  * v0.0.7 - PJM - see "issues" in code
+  * v0.0.7 - PJM -> 07-30-16 - (see "issues" in code) (WOrking on)
  *  v0.0.6 - PJM - (working on adding a watchdog timer reset so it can continue to write after an eject, then adding formatting)
  *  v0.0.5 - PJM -> 07-29-16 - SD Card writing (dummy data) and safe eject
  *  v0.0.4 - PJM - (working on data compression and delta tolerance) (not done, skipping)
@@ -154,8 +154,8 @@
  long count = 0;
  word data[DATA_LENGTH] = {0};          // Updated data (e.g. analog inputs or charge controller received data) placed here
  word olddata[DATA_LENGTH] = {0};       // Previous loops data is stored here for comparison purposes
- //word writedata[DATA_LENGTH] = {0};     // This is the data to be written to the SD card (e.g. olddata="5,2,1" && data="4,3,1" -> writedata="4,3,x")
- //word holddata[DATA_LENGTH] = {0};      // This is the data that any "old" writedata represents (cont. above e.g.: writedata="4,3,1")
+ word writedata[DATA_LENGTH] = {0};     // This is the data to be written to the SD card (e.g. olddata="5,2,1" && data="4,3,1" -> writedata="4,3,x")
+ word holddata[DATA_LENGTH] = {0};      // This is the data that any "old" writedata represents (cont. above e.g.: writedata="4,3,1")
  word A0_value, A1_value, A2_value, A3_value;
  byte error_status = 0;
  byte GoodToEject = 0;

@@ -1,10 +1,10 @@
 ///////////////////////////////////////////////STuff to transfer over////////////////////////////////////////////////////////
 #include <SoftwareSerial.h>
 /*-----( Declare Constants and Pin Numbers )-----*/
-#define SSerialRX        12  //Serial Receive pin
-#define SSerialTX        11  //Serial Transmit pin
+#define SSerialRX        19//a5 //12  //Serial Receive pin
+#define SSerialTX        18//a4 //11  //Serial Transmit pin
 
-#define SSerialTxControl 10   //RS485 Direction control
+#define SSerialTxControl 5//pd5 //10   //RS485 Direction control
 
 #define RS485Transmit    HIGH
 #define RS485Receive     LOW
@@ -38,8 +38,6 @@ void setup()   /****** SETUP: RUNS ONCE ******/
   Serial.begin(9600);
   Serial.println("Use Serial Monitor, type and press ENTER");
   
-  pinMode(Pin13LED, OUTPUT);   
-
   ///////////////////////////////////////////////STuff to transfer over////////////////////////////////////////////////////////
   pinMode(SSerialTxControl, OUTPUT);    
   
@@ -66,7 +64,6 @@ void loop()   /****** LOOP: RUNS CONSTANTLY ******/
   }
   
   int count = 0;
-  digitalWrite(Pin13LED, HIGH);  // Show activity
   if (Serial.available())
   {
     start = 1;
