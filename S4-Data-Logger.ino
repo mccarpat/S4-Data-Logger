@@ -1,6 +1,18 @@
 #define VERSION "0.0.6"
 #define VERSIONDATE "07-29-16"
 
+/*   CURRENT ISSUE
+   
+     wdt doesn't disable on a rest. it actually sets to 15ms. so it gets stuck in a loop.
+     either find a different software reset solution, or fix this.
+     http://electronics.stackexchange.com/questions/151865/why-does-my-avr-reset-when-i-call-wdt-disable-to-try-to-turn-the-watchdog-time
+
+
+*/
+
+
+
+
 /* Places program can get stuck:
    - Initializing the SD card if failure -> RRRRGGxxxxx...
      InitializeSDCard(); // Fail loop: Red 400, green 200, Off 500.    Success loop:  Green 250 x 3
@@ -103,8 +115,9 @@
  #define GREEN_LED_ON digitalWrite(PIN_GREEN_LED, 1)
  #define GREEN_LED_OFF digitalWrite(PIN_GREEN_LED, 0)
  #define SD_CARD_IS_PRESENT digitalRead(PIN_SD_CD)
- //#define error 1
- //#define good 0
+ //#define watchdog_clear_status()    MCUSR = 0
+ //#define watchdog_feed()            wdt_reset()
+
  
  // Define array element positions for data
  #define pos_Voltage0 0
@@ -114,6 +127,8 @@
  
  // Includes
  #include <SD.h>
+ #include <avr/interrupt.h>
+ #include <avr/wdt.h>
  
  // Declare functions
  boolean Button1_Pressed( void );
@@ -139,6 +154,15 @@
  
  // Main program
  void setup() {
+   
+   // Immediately disable the watchdog timer so as not to get stuck in a loop
+   MCUSR = 0;
+   wdt_disable();
+   //MCUSR &= ~(1<<WDRF);
+   //WDTCSR |= (1<<WDCE) | (1<<WDE);
+   //WDTCSR = 0x00;
+   //wdt_disable();
+   
    // Initialize system
    pinMode(PIN_BUTTON1, INPUT);
    pinMode(PIN_BUTTON2, INPUT);
@@ -146,6 +170,12 @@
    pinMode(PIN_GREEN_LED, OUTPUT);
    pinMode(PIN_SD_CS, OUTPUT);
    pinMode(PIN_SD_CD, INPUT);
+  
+  
+   //watchdog_clear_status();
+   
+
+   
    
    // Initialize serial communication at 9600 bits per second:
    #ifdef USING_SERIAL
@@ -288,10 +318,23 @@
      
  
      
+ void SoftReset( void );
+ void SoftReset( void ) {
+   wdt_enable(WDTO_1S);
+   // Watchdog Timer set up in reset mode with 1s timeout
+   //WDTCSR |= (1<<WDCE) | (1<<WDE);   // Set Change Enable bit and Enable Watchdog System Reset Mode.
+   //WDTCSR = (1<<WDE) | (1<<WDIE) | (0<<WDP3 )|(1<<WDP2 )|(1<<WDP1)|(0<<WDP0);
+   //sei();
+   GREEN_LED_ON;
+   RED_LED_OFF;
+   while(1){
+     // This hurts to write
+   }
+ }  
      
-     
-     
-     
+ //ISR(WDT_vect) {
+ //  RED_LED_ON;
+ //}   
      
      
      
@@ -435,6 +478,9 @@
    // Do you have to reinitialize the SD card? May need to force a watchdog timer reset.
    RED_LED_OFF;
    GREEN_LED_OFF;
+   
+   // Only way to reinitialize the file, without modifying sd.cpp, is a soft reset
+   SoftReset();
  }
      
      
