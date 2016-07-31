@@ -1,4 +1,4 @@
-#define VERSION "0.0.8"
+#define VERSION "0.1.0"
 #define VERSIONDATE "07-31-16"
 
 /* System functionality:
@@ -33,11 +33,12 @@
 
 
 /* TO DO:
- *  - Need to find two pins that can be pulled up/down to identify unique logging units
+ *  
     - Code data retrieval from CC, including error handling
     - Write all of this data to the SD card
     - Verify that sleeping between cycles does not interfere with anything
     - If no compression, is MoveDataToOldData(); needed?
+    - Is olddata and related functions needed?
     - Write short manual for what to do for when red LED is on, and then for how to swap cards, etc.
     - REDO ALL OF THE ABOVE:  Write wall logger.
     - Implement data tolerance and compression? (e.g. the whole thing where if the new value is within tolerance of the old one, just say it is the old value, and if it is the old value, say it is "x". Then look at the line, and replace "x,"'s with a, b, c... e.g.   "x,x,x," => "c" (a=1, b=2, c=3).
@@ -54,6 +55,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+ *  v0.1.0 - PJM - (Implementing CC reading code)
  *  v0.0.8 - PJM -> 07-31-16 - System cleaned up and working: No reading real data from analog, no reading data from CC. Just the SD card workings.
   * v0.0.7 - PJM -> 07-30-16 - (see "issues" in code) (WOrking on)
  *  v0.0.6 - PJM - (working on adding a watchdog timer reset so it can continue to write after an eject, then adding formatting) (chose to not add formatting)
@@ -86,6 +88,9 @@
  *  A1  / PC1 / 15 / Analog 1   -        (Temp) Rocker 2
  *  A2  / PC2 / 16 / Analog 2   -        (Temp) Rocker 3
  *  A3  / PC3 / 17 / Analog 3   -        (Temp) Rocker 4
+ *  19 SSerialRX
+ *  18 SSerialTX
+ *  5 SSerialTxControl
  *  
  *  
  *  --- Notes -----------------------
@@ -96,10 +101,10 @@
  #define USING_SERIAL
  #define DEBOUNCE_TIME 10 // 10 ms, one debounce
  #define SYSTEM_BOOT_TIME 5 // When the system starts up (such as after a reset) it flashes the green led for this many seconds before starting the main code
- #define DATA_LENGTH 20 // Data array has 20 elements
+ #define DATA_LENGTH 21 // Data array has 20 elements
  #define LOG_FILE_NAME "datalog.txt"
  #define SAFE_SDCARD_EJECT_BUTTON_HOLD_SECONDS 3 // 3 seconds of holding button1 to safely eject
- #define PRIMARY_DELAY_SECONDS 10 // 300 seconds is 5 minutes. Number of seconds between subsequent data read/writes. (sleep time, essentially, sans actual mcu sleep)
+ #define PRIMARY_DELAY_SECONDS 1 // 300 seconds is 5 minutes. Number of seconds between subsequent data read/writes. (sleep time, essentially, sans actual mcu sleep)
 
 
  // Define pins
@@ -120,17 +125,61 @@
  #define SD_CARD_IS_PRESENT digitalRead(PIN_SD_CD)
 
  
- // Define array element positions for data
- #define pos_Voltage0 0
- #define pos_Voltage1 1
- #define pos_Voltage2 2
- #define pos_Voltage3 3
- #define pos_SystemID 4
+ // Define array element positions for data[...pos...]
+ #define pos_SystemID 0
+ #define pos_DateTime0 1
+ #define pos_DateTime1 2
+ #define pos_DateTime2 3
+ #define pos_DateTime3 4
+ #define pos_DateTime4 5
+ #define pos_DateTime5 6
+ #define pos_PV0 7
+ #define pos_PV1 8
+ #define pos_Bat0 9
+ #define pos_Bat1 10
+ #define pos_Load0 11
+ #define pos_Load1 12
+ #define pos_TempBatTempIE0 13
+ #define pos_TempBatTempIE1 14
+ #define pos_SOCTempRemote0 15
+ #define pos_SOCTempRemote1 16 
+ #define pos_Voltage0 17
+ #define pos_Voltage1 18
+ #define pos_Voltage2 19
+ #define pos_Voltage3 20
+
+
+ #ifdef USING_SERIAL
+ #define pos_0t "ID: "
+ #endif
 
  
  // Includes
  #include <SD.h>
  #include <avr/interrupt.h>
+ #include <SoftwareSerial.h>
+
+// CLEAN UP (put whre it should go)
+#define SSerialRX        19//a5 //12  //Serial Receive pin
+#define SSerialTX        18//a4 //11  //Serial Transmit pin
+#define SSerialTxControl 5//pd5 //10   //RS485 Direction control
+#define RS485Transmit    HIGH
+#define RS485Receive     LOW
+word CRC_find(byte *msg, byte msglen);
+bool error_check(byte *msg, byte msglen);
+word getdata(byte ID, word *data);
+byte get_CC_SOC_TempRemote(byte ID, word *SOC_TempRemote);
+byte get_Date_Time(byte ID, word *Date_Time);
+byte get_CC_TempBat_TempIE(byte ID, word *TempBat_TempIE);
+byte get_CC_Load(byte ID, word *Load);
+byte get_CC_PV(byte ID, word *PV);
+byte get_CC_Bat(byte ID, word *Bat);
+SoftwareSerial RS485Serial(SSerialRX, SSerialTX); // RX, TX
+int size_MsgReceived;
+//word data[20] = {0}; //This too as long as the size is 16 or greater it's fine. you might want to use 20 since we have the other 4 stuff too
+int byteSendi;
+byte byteSend[8] = {0};
+int start = 0;
 
  
  // Declare functions
@@ -148,8 +197,8 @@
  long count = 0;
  word data[DATA_LENGTH] = {0};          // Updated data (e.g. analog inputs or charge controller received data) placed here
  word olddata[DATA_LENGTH] = {0};       // Previous loops data is stored here for comparison purposes
- word writedata[DATA_LENGTH] = {0};     // This is the data to be written to the SD card (e.g. olddata="5,2,1" && data="4,3,1" -> writedata="4,3,x")
- word holddata[DATA_LENGTH] = {0};      // This is the data that any "old" writedata represents (cont. above e.g.: writedata="4,3,1")
+ //word writedata[DATA_LENGTH] = {0};     // This is the data to be written to the SD card (e.g. olddata="5,2,1" && data="4,3,1" -> writedata="4,3,x")
+ //word holddata[DATA_LENGTH] = {0};      // This is the data that any "old" writedata represents (cont. above e.g.: writedata="4,3,1")
  word A0_value, A1_value, A2_value, A3_value;
  byte error_status = 0;
  byte GoodToEject = 0;
@@ -171,6 +220,12 @@
    #ifdef USING_SERIAL
    Serial.begin(9600);
    #endif
+
+   // ORGANIZE
+   pinMode(SSerialTxControl, OUTPUT);    
+   digitalWrite(SSerialTxControl, RS485Receive);
+   // Start the software serial port, to another device
+   RS485Serial.begin(115200);   // set the data rate
    
    InitializeSDCard(); // Blinks RED if no SD card
 
@@ -196,6 +251,16 @@
      // Turn on RED LED to indicate running critical processes (i.e. do NOT press RESET)
      RED_LED_ON;
      delay(1000); // Give it a second so they don't press the button just after everything starts
+
+     word err = getdata(0x01, data);
+     Serial.print("error check: ");
+     Serial.println(err,BIN);
+     Serial.print("data received: ");
+     for (int j = 0; j < DATA_LENGTH;j++)
+     {
+       Serial.print(data[j],DEC);
+       Serial.print(" ");
+     }
      
      ReadAnalogVoltages();  // Update AnalogRead voltages and data[...]
      data[pos_SystemID] = (word)SystemID();  // Update data[...] with SystemID
@@ -334,11 +399,15 @@
   
  // Update AnalogRead voltages and data[...]
  void ReadAnalogVoltages( void ) {
+   A0_value = analogRead(A0);
+   A1_value = analogRead(A1);
+   A2_value = analogRead(A2);
+   A3_value = analogRead(A3);
    // Read in the analog voltages (Example: 2.34 volts yields a value of 234)
-   A0_value = float(analogRead(A0) * (5.0 / 1023.0)) * 100.0;
-   A1_value = float(analogRead(A1) * (5.0 / 1023.0)) * 100.0;
-   A2_value = float(analogRead(A2) * (5.0 / 1023.0)) * 100.0;
-   A3_value = float(analogRead(A3) * (5.0 / 1023.0)) * 100.0;
+   //A0_value = float(analogRead(A0) * (5.0 / 1023.0)) * 100.0;
+   //A1_value = float(analogRead(A1) * (5.0 / 1023.0)) * 100.0;
+   //A2_value = float(analogRead(A2) * (5.0 / 1023.0)) * 100.0;
+   //A3_value = float(analogRead(A3) * (5.0 / 1023.0)) * 100.0;
    data[pos_Voltage0] = A0_value;
    data[pos_Voltage1] = A1_value;
    data[pos_Voltage2] = A2_value;
@@ -445,4 +514,386 @@
    ID |= digitalRead(PIN_ID1);
    return ID;
  }
- 
+
+
+
+
+
+
+ // ******* SOFIA'S CODE *******
+
+ word CRC_find(byte *msg, byte msglen)
+{
+  
+  word CRC = 0xFFFF;
+      //010431040001
+    for (int p = 0; p<msglen-2;p++)
+    {
+      CRC = CRC ^ msg[p];
+      for (int c = 8; c!=0;c--)
+      {
+        if ((0x0001 & CRC)==0)
+        {
+          CRC = CRC >> 1;
+        }
+        else
+        {
+          CRC = CRC >> 1;
+          CRC = CRC ^ 0xA001;
+        }
+      }
+    }
+    return CRC;
+}
+
+bool error_check(byte *msg, byte msglen)
+{
+  word CRC = CRC_find(msg,msglen);
+  byte CRC_H = byte (CRC>>8);
+  byte CRC_L = byte (0x00FF & CRC);
+
+  if ((CRC_H == msg[msglen-1]) && (CRC_L == msg[msglen-2]))
+    return 1;
+  else
+    return 0;
+}
+
+
+byte get_CC_PV(byte ID, word *PV)
+{
+    bool err = 0;
+    int false_count = 0;
+    byte msgR[60] = {0};
+    int iterations = 5;
+
+    byte byteSend[] = {ID, 0x04, 0x31, 0x00, 0x00, 0x02, 0x00, 0x00};
+    word CRC = 0x0000;
+    CRC = CRC_find(byteSend,8);
+    byteSend[7] = byte (CRC>>8);
+    byteSend[6] = byte (0x00FF & CRC);
+
+    while (false_count < iterations)
+    {
+      digitalWrite(SSerialTxControl, RS485Transmit);  // Enable RS485 Transmit  
+      delay(1);
+      
+      RS485Serial.write(byteSend,sizeof(byteSend));// Send byte to Remote Arduino 
+      delay(1);
+      digitalWrite(SSerialTxControl, RS485Receive);  // Disable RS485 Transmit
+      byte size_data = RS485Serial.readBytes(msgR,60);    // Read received byte
+      err = error_check(msgR,size_data);
+      
+      if (err && (msgR[2]==(size_data-5)))
+      {
+        PV[0] = ((word (msgR[3]<<8))|(word (0x00FF & msgR[4])));
+        PV[1] = ((word (msgR[5]<<8))|(word (0x00FF & msgR[6])));
+        break;
+      }
+      else
+      {
+        PV[0] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+        PV[1] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+        false_count = false_count +1;
+      }
+    }
+    
+    if (err)
+    {
+      return msgR[2]/2;
+    }
+    else
+      return 0;    
+}
+
+byte get_CC_Bat(byte ID, word *Bat)
+{
+    bool err = 0;
+    int false_count = 0;
+    byte msgR[60] = {0};
+    int iterations = 5;
+
+    byte byteSend[] = {ID, 0x04, 0x31, 0x04, 0x00, 0x02, 0x00, 0x00};
+    word CRC = 0x0000;
+    CRC = CRC_find(byteSend,8);
+    byteSend[7] = byte (CRC>>8);
+    byteSend[6] = byte (0x00FF & CRC);
+
+    while (false_count < iterations)
+    {
+      digitalWrite(SSerialTxControl, RS485Transmit);  // Enable RS485 Transmit  
+      delay(1);
+      
+      RS485Serial.write(byteSend,sizeof(byteSend));// Send byte to Remote Arduino  
+      delay(1);
+      digitalWrite(SSerialTxControl, RS485Receive);  // Disable RS485 Transmit
+      
+      byte size_data = RS485Serial.readBytes(msgR,60);    // Read received byte
+      err = error_check(msgR,size_data);
+      if (err && (msgR[2]==(size_data-5)))
+      {
+        Bat[0] = ((word (msgR[3]<<8))|(word (0x00FF & msgR[4])));
+        Bat[1] = ((word (msgR[5]<<8))|(word (0x00FF & msgR[6])));
+        break;
+      }
+      else
+      {
+        Bat[0] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+        Bat[1] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+        false_count = false_count +1;
+      }
+    }
+    
+    if (err)
+    {
+      return msgR[2]/2;
+    }
+    else
+      return 0;  
+}
+
+byte get_CC_Load(byte ID, word *Load)
+{
+    bool err = 0;
+    int false_count = 0;
+    byte msgR[60] = {0};
+    int iterations = 5;
+
+    byte byteSend[] = {ID, 0x04, 0x31, 0x0C, 0x00, 0x02, 0x00, 0x00};
+    word CRC = 0x0000;
+    CRC = CRC_find(byteSend,8);
+    byteSend[7] = byte (CRC>>8);
+    byteSend[6] = byte (0x00FF & CRC);
+
+    while (false_count < iterations)
+    {
+      digitalWrite(SSerialTxControl, RS485Transmit);  // Enable RS485 Transmit  
+      delay(1);
+      
+      RS485Serial.write(byteSend,sizeof(byteSend));// Send byte to Remote Arduino   
+      delay(1);
+      digitalWrite(SSerialTxControl, RS485Receive);  // Disable RS485 Transmit
+      
+      byte size_data = RS485Serial.readBytes(msgR,60);    // Read received byte
+      err = error_check(msgR,size_data);
+      if (err && (msgR[2]==(size_data-5)))
+      {
+        Load[0] = ((word (msgR[3]<<8))|(word (0x00FF & msgR[4])));
+        Load[1] = ((word (msgR[5]<<8))|(word (0x00FF & msgR[6])));
+        break;
+      }
+      else
+      {
+        Load[0] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+        Load[1] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+        false_count = false_count +1;
+      }
+        
+    }
+    
+    if (err)
+    {
+      return msgR[2]/2;
+    }
+    else
+      return 0;    
+}
+
+byte get_CC_TempBat_TempIE(byte ID, word *TempBat_TempIE)
+{
+    bool err = 0;
+    int false_count = 0;
+    byte msgR[60] = {0};
+    int iterations = 5;
+
+    byte byteSend[] = {ID, 0x04, 0x31, 0x10, 0x00, 0x02, 0x00, 0x00};
+    word CRC = 0x0000;
+    CRC = CRC_find(byteSend,8);
+    byteSend[7] = byte (CRC>>8);
+    byteSend[6] = byte (0x00FF & CRC);
+      
+    while (false_count < iterations)
+    {
+      digitalWrite(SSerialTxControl, RS485Transmit);  // Enable RS485 Transmit  
+      delay(1);
+      
+      RS485Serial.write(byteSend,sizeof(byteSend));// Send byte to Remote Arduino  
+      delay(1);
+      digitalWrite(SSerialTxControl, RS485Receive);  // Disable RS485 Transmit
+      
+      byte size_data = RS485Serial.readBytes(msgR,60);    // Read received byte
+      err = error_check(msgR,size_data);
+      if (err && (msgR[2]==(size_data-5)))
+      {
+        TempBat_TempIE[0] = ((word (msgR[3]<<8))|(word (0x00FF & msgR[4])));
+        TempBat_TempIE[1] = ((word (msgR[5]<<8))|(word (0x00FF & msgR[6])));
+        break;
+      }
+      else
+        false_count = false_count +1;
+    }
+    
+    if (err)
+    {
+      return msgR[2]/2;
+    }
+    else
+    {
+      TempBat_TempIE[0] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+      TempBat_TempIE[1] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+      return 0;    
+    }
+}
+
+byte get_CC_SOC_TempRemote(byte ID, word *SOC_TempRemote)
+{
+    bool err = 0;
+    int false_count = 0;
+    byte msgR[60] = {0};
+    int iterations = 5;
+    
+    byte byteSend[] = {ID, 0x04, 0x31, 0x1A, 0x00, 0x02, 0x00, 0x00};
+    word CRC = 0x0000;
+    CRC = CRC_find(byteSend,8);
+    byteSend[7] = byte (CRC>>8);
+    byteSend[6] = byte (0x00FF & CRC);
+
+    while (false_count < iterations)
+    {
+      digitalWrite(SSerialTxControl, RS485Transmit);  // Enable RS485 Transmit  
+      delay(1);
+      
+      RS485Serial.write(byteSend,sizeof(byteSend));// Send byte to Remote Arduino 
+      delay(1);
+      digitalWrite(SSerialTxControl, RS485Receive);  // Disable RS485 Transmit
+      
+      byte size_data = RS485Serial.readBytes(msgR,60);    // Read received byte
+      err = error_check(msgR,size_data);
+      if (err && (msgR[2]==(size_data-5)))
+      {
+        SOC_TempRemote[0] = ((word (msgR[3]<<8))|(word (0x00FF & msgR[4])));
+        SOC_TempRemote[1] = ((word (msgR[5]<<8))|(word (0x00FF & msgR[6])));
+        break;
+      }
+      else
+        false_count = false_count +1;
+    }
+    
+    if (err)
+    {
+      return msgR[2]/2;
+    }
+    else
+    {
+      SOC_TempRemote[0] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+      SOC_TempRemote[1] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+      return 0;    
+    }
+}
+
+byte get_Date_Time(byte ID, word *Date_Time)
+{
+    bool err = 0;
+    int false_count = 0;
+    byte msgR[60] = {0};
+    int iterations = 5;
+
+    byte byteSend[] = {ID, 0x03, 0x90, 0x13, 0x00, 0x03, 0x00, 0x00};
+    word CRC = 0x0000;
+    CRC = CRC_find(byteSend,8);
+    byteSend[7] = byte (CRC>>8);
+    byteSend[6] = byte (0x00FF & CRC);
+
+    while (false_count < iterations)
+    {
+      digitalWrite(SSerialTxControl, RS485Transmit);  // Enable RS485 Transmit  
+      delay(1);
+      
+      RS485Serial.write(byteSend,sizeof(byteSend));// Send byte to Remote Arduino   
+      delay(1);
+      digitalWrite(SSerialTxControl, RS485Receive);  // Disable RS485 Transmit
+      
+      byte size_data = RS485Serial.readBytes(msgR,60);    // Read received byte
+      err = error_check(msgR,size_data);
+      if (err && (msgR[2]==(size_data-5)))
+      {
+        Date_Time[0] = word (0x00FF & msgR[7]);
+        Date_Time[1] = word (0x00FF & msgR[8]);
+        Date_Time[2] = word (0x00FF & msgR[5]);
+        Date_Time[3] = word (0x00FF & msgR[6]);
+        Date_Time[4] = word (0x00FF & msgR[3]);
+        Date_Time[5] = word (0x00FF & msgR[4]);
+        break;
+      }
+      else
+      {
+        Date_Time[0] = ((word (msgR[1]<<8))|(word (0x00FF & msgR[2])));
+        false_count = false_count +1;
+      }
+    }
+    
+    if (err)
+    {
+      return msgR[2]/2;
+    }
+    else
+    {
+      Date_Time[1] = Date_Time[0];
+      Date_Time[2] = Date_Time[0];
+      Date_Time[3] = Date_Time[0];
+      Date_Time[4] = Date_Time[0];
+      Date_Time[5] = Date_Time[0];
+      return 0;
+    }
+}
+
+
+word getdata(byte ID, word *data)//ID is in options default is 1 check later.
+{
+    word error = 0;
+    word Date_Time[6] = {0};
+    word PV[2] = {0};
+    word Bat[2] = {0};
+    word Load[2] = {0};
+    word SOC_TempRemote[2] = {0};
+    word TempBat_TempIE[2] = {0};
+   
+    byte err_dt = get_Date_Time(ID, Date_Time);
+    byte err_pv = get_CC_PV(ID, PV);
+    byte err_bat = get_CC_Bat(ID, Bat);
+    byte err_load = get_CC_Load(ID, Load);
+    byte err_temp_bat_ie = get_CC_TempBat_TempIE(ID, TempBat_TempIE);
+    byte err_soc_tempext = get_CC_SOC_TempRemote(ID, SOC_TempRemote);
+
+  //How the data array is structured:
+    data[pos_DateTime0] = Date_Time[0];
+    data[pos_DateTime1] = Date_Time[1];
+    data[pos_DateTime2] = Date_Time[2];
+    data[pos_DateTime3] = Date_Time[3];
+    data[pos_DateTime4] = Date_Time[4];
+    data[pos_DateTime5] = Date_Time[5];
+    data[pos_PV0] = PV[0];
+    data[pos_PV1] = PV[1];
+    data[pos_Bat0] = Bat[0];
+    data[pos_Bat1] = Bat[1];
+    data[pos_Load0] = Load[0];
+    data[pos_Load1] = Load[1];
+    data[pos_TempBatTempIE0] = TempBat_TempIE[0];
+    data[pos_TempBatTempIE1] = TempBat_TempIE[1];
+    data[pos_SOCTempRemote0] = SOC_TempRemote[0];
+    data[pos_SOCTempRemote1] = SOC_TempRemote[1];
+
+    if (err_dt == 0)
+      error = error | 0x003F;
+    if (err_pv == 0)
+      error = error | 0x00C0;
+    if (err_bat ==0)
+      error = error | 0x0300;
+    if (err_load == 0)
+      error = error | 0x0C00;
+    if (err_temp_bat_ie ==0)
+      error = error | 0x3000;
+    if (err_soc_tempext == 0)
+      error = error | 0xC000;
+      
+    return error;
+}
