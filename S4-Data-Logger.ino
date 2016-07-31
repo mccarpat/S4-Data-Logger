@@ -1,10 +1,10 @@
-#define VERSION "0.1.0"
+#define VERSION "0.1.1"
 #define VERSIONDATE "07-31-16"
 
 /* System functionality:
  *  - System start (fresh or from a reset)
  *  - If blinking red, SD card read error (sd card is unreadable or not inserted)
- *  - Blinks green for X seconds (allowing user to switch from having just pressed the reset button to pressing button 1 if they wish to swap SD cards)
+ *  - Blinks green for X seconds (allowing user to switch from having just pressed the reset button to pressing button 1 if they wish to swap SD cards) (Press button 1 at this time otherwise will have to wait)
  *  - (MAIN LOOP START)
  *  - User must hold Button 1 at this point if a swap of SD cards is desired
  *    -SWAP:
@@ -18,6 +18,8 @@
  *  - If blinking red with slight green flash (RRRRRxxxxxRRRRRgg...), SD card FILE read error. Try a reset, possibly need a new SD card or to format it. Once resolved, system will alternate flashing RED/GREEN. Must press RESET.
  *  - LEDs off, system delays X minutes (does not sleep). If user wishes to swap SD card, press RESET while no RED on, then button 1.
  *  - (MAIN LOOP END)
+ *  
+ *  - User MUST safely eject SD card both from device and from computers. File is easily corrupted.
  *  
  *  07-30-16 - Measured, system draws from 12V source ~70mA while in primary delay(...). On a 110 Ah battery, this will take 1571 hours to drain. System is designed to last 48 hours. 48 hours at 70mA is 3360mAh, or a usage of 3% of the system's total power. Without sleeping the unit. 
  */ 
@@ -34,11 +36,6 @@
 
 /* TO DO:
  *  
-    - Code data retrieval from CC, including error handling
-    - Write all of this data to the SD card
-    - Verify that sleeping between cycles does not interfere with anything
-    - If no compression, is MoveDataToOldData(); needed?
-    - Is olddata and related functions needed?
     - Write short manual for what to do for when red LED is on, and then for how to swap cards, etc.
     - REDO ALL OF THE ABOVE:  Write wall logger.
     - Implement data tolerance and compression? (e.g. the whole thing where if the new value is within tolerance of the old one, just say it is the old value, and if it is the old value, say it is "x". Then look at the line, and replace "x,"'s with a, b, c... e.g.   "x,x,x," => "c" (a=1, b=2, c=3).
@@ -55,6 +52,7 @@
  *  Sofia Fanourakis
  *  
  *  --- Changelog -------------------
+ *  v0.1.1 - PJM - (adding SD card writing and better serial output)
  *  v0.1.0 - PJM - (Implementing CC reading code)
  *  v0.0.8 - PJM -> 07-31-16 - System cleaned up and working: No reading real data from analog, no reading data from CC. Just the SD card workings.
   * v0.0.7 - PJM -> 07-30-16 - (see "issues" in code) (WOrking on)
@@ -101,10 +99,13 @@
  #define USING_SERIAL
  #define DEBOUNCE_TIME 10 // 10 ms, one debounce
  #define SYSTEM_BOOT_TIME 5 // When the system starts up (such as after a reset) it flashes the green led for this many seconds before starting the main code
- #define DATA_LENGTH 21 // Data array has 20 elements
+ #define DATA_LENGTH 22 // Data array has 20 elements
+ #define RED_WARNING_MS 1000 // (default: 5000) ms to have RED LED on before interacting with SD card (to prevent user from pressing RST -JUST- as the SD card processes start)
  #define LOG_FILE_NAME "datalog.txt"
+ #define DELIMITER_CHAR ' '
+ #define DEVICE_ID 0x01 // In charge controller menu, this is the device ID.  Set it to 1.
  #define SAFE_SDCARD_EJECT_BUTTON_HOLD_SECONDS 3 // 3 seconds of holding button1 to safely eject
- #define PRIMARY_DELAY_SECONDS 1 // 300 seconds is 5 minutes. Number of seconds between subsequent data read/writes. (sleep time, essentially, sans actual mcu sleep)
+ #define PRIMARY_DELAY_SECONDS 2 // (default: 300) 300 seconds is 5 minutes. Number of seconds between subsequent data read/writes. (sleep time, essentially, sans actual mcu sleep)
 
 
  // Define pins
@@ -147,10 +148,32 @@
  #define pos_Voltage1 18
  #define pos_Voltage2 19
  #define pos_Voltage3 20
+ #define pos_Error 21
 
 
  #ifdef USING_SERIAL
- #define pos_0t "ID: "
+ #define pos_t0 "ID"
+ #define pos_t1 "YY"
+ #define pos_t2 "MM"
+ #define pos_t3 "DD"
+ #define pos_t4 "HH"
+ #define pos_t5 "MM"
+ #define pos_t6 "SS"
+ #define pos_t7 "PV V"
+ #define pos_t8 "PV I"
+ #define pos_t9 "BAT V"
+ #define pos_t10 "BAT I"
+ #define pos_t11 "LOAD V"
+ #define pos_t12 "LOAD I"
+ #define pos_t13 "TEMP1"
+ #define pos_t14 "TEMP2"
+ #define pos_t15 "SOC1"
+ #define pos_t16 "SOC2"
+ #define pos_t17 "L1 V"
+ #define pos_t18 "L2 V"
+ #define pos_t19 "L3 V"
+ #define pos_t20 "L4 V"
+ #define pos_t21 "ERR"
  #endif
 
  
@@ -179,12 +202,12 @@ int size_MsgReceived;
 //word data[20] = {0}; //This too as long as the size is 16 or greater it's fine. you might want to use 20 since we have the other 4 stuff too
 int byteSendi;
 byte byteSend[8] = {0};
-int start = 0;
+//int start = 0;
 
  
  // Declare functions
  boolean Button1_Pressed( void );
- void MoveDataToOldData( void );
+ //void MoveDataToOldData( void );
  void ReadAnalogVoltages( void );  // Update AnalogRead voltages and data[...]
  void InitializeSDCard( void );  // Initializes the SD card interface, and handles error loop (light codes) if necessary
  void WriteDataToSDCard( void ); // Writes data[...] to the SD card, and handles error loop (light codes) if necessary
@@ -196,12 +219,13 @@ int start = 0;
  // Initialize variables
  long count = 0;
  word data[DATA_LENGTH] = {0};          // Updated data (e.g. analog inputs or charge controller received data) placed here
- word olddata[DATA_LENGTH] = {0};       // Previous loops data is stored here for comparison purposes
+ //word olddata[DATA_LENGTH] = {0};       // Previous loops data is stored here for comparison purposes
  //word writedata[DATA_LENGTH] = {0};     // This is the data to be written to the SD card (e.g. olddata="5,2,1" && data="4,3,1" -> writedata="4,3,x")
  //word holddata[DATA_LENGTH] = {0};      // This is the data that any "old" writedata represents (cont. above e.g.: writedata="4,3,1")
  word A0_value, A1_value, A2_value, A3_value;
  byte error_status = 0;
  byte GoodToEject = 0;
+ word err = 0;
 
  
  // Main program
@@ -243,52 +267,71 @@ int start = 0;
    while(1)
    {
      
-     MoveDataToOldData();  // Updates olddata to be the previous cycle's data 
+     //MoveDataToOldData();  // Updates olddata to be the previous cycle's data 
      
      // Safely eject if Button1 is pressed for X seconds
      EjectRequestCheckAndHandler(); // Checks if the users wants to eject the SD card and handles this process
 
      // Turn on RED LED to indicate running critical processes (i.e. do NOT press RESET)
      RED_LED_ON;
-     delay(1000); // Give it a second so they don't press the button just after everything starts
+     delay(RED_WARNING_MS); // Give it a bit so they don't press the button just after everything starts
 
-     word err = getdata(0x01, data);
-     Serial.print("error check: ");
-     Serial.println(err,BIN);
-     Serial.print("data received: ");
-     for (int j = 0; j < DATA_LENGTH;j++)
-     {
-       Serial.print(data[j],DEC);
-       Serial.print(" ");
-     }
+     //err = getdata(DEVICE_ID, data);
+     //data[pos_Error] = err;
+     data[pos_Error] = getdata(DEVICE_ID, data);
+     //Serial.print("error check: ");
+     //Serial.println(err,BIN);
+     //Serial.print("data received: ");
+     //for (int j = 0; j < DATA_LENGTH;j++)
+     //{
+     //  Serial.print(data[j],DEC);
+     //  Serial.print(" ");
+     //}
      
      ReadAnalogVoltages();  // Update AnalogRead voltages and data[...]
      data[pos_SystemID] = (word)SystemID();  // Update data[...] with SystemID
      
      WriteDataToSDCard();   // Fail: Red 200, off 100, Red 200, Green 200, off 300   Sucess: Green 250
 
-    // Turn off RED LED to indicate done with critical processes (RESET can be pressed)
-    RED_LED_OFF;
+     // Turn off RED LED to indicate done with critical processes (RESET can be pressed)
+     RED_LED_OFF;
      
      // Print to the serial monitor if being used
      #ifdef USING_SERIAL
-     Serial.print(count);
-     Serial.print(": ");
-     Serial.print(data[pos_Voltage0]);
-     Serial.print(", ");
-     Serial.print(data[pos_Voltage1]);
-     Serial.print(", ");
-     Serial.print(data[pos_Voltage2]);
-     Serial.print(", ");
-     Serial.print(data[pos_Voltage3]);
-     Serial.print(", System ID: ");
-     Serial.print(data[pos_SystemID]);
      Serial.println("");
+     Serial.println("");
+     Serial.print("Count - ");
+     Serial.println(count);
+     Serial.print(pos_t0); Serial.print(": "); Serial.println(data[0],DEC);
+     Serial.print(pos_t1); Serial.print(": "); Serial.println(data[1],DEC);
+     Serial.print(pos_t2); Serial.print(": "); Serial.println(data[2],DEC);
+     Serial.print(pos_t3); Serial.print(": "); Serial.println(data[3],DEC);
+     Serial.print(pos_t4); Serial.print(": "); Serial.println(data[4],DEC);
+     Serial.print(pos_t5); Serial.print(": "); Serial.println(data[5],DEC);
+     Serial.print(pos_t6); Serial.print(": "); Serial.println(data[6],DEC);
+     Serial.print(pos_t7); Serial.print(": "); Serial.println(data[7],DEC);
+     Serial.print(pos_t8); Serial.print(": "); Serial.println(data[8],DEC);
+     Serial.print(pos_t9); Serial.print(": "); Serial.println(data[9],DEC);
+     Serial.print(pos_t10); Serial.print(": "); Serial.println(data[10],DEC);
+     Serial.print(pos_t11); Serial.print(": "); Serial.println(data[11],DEC);
+     Serial.print(pos_t12); Serial.print(": "); Serial.println(data[12],DEC);
+     Serial.print(pos_t13); Serial.print(": "); Serial.println(data[13],DEC);
+     Serial.print(pos_t14); Serial.print(": "); Serial.println(data[14],DEC);
+     Serial.print(pos_t15); Serial.print(": "); Serial.println(data[15],DEC);
+     Serial.print(pos_t16); Serial.print(": "); Serial.println(data[16],DEC);
+     Serial.print(pos_t17); Serial.print(": "); Serial.println(data[17],DEC);
+     Serial.print(pos_t18); Serial.print(": "); Serial.println(data[18],DEC);
+     Serial.print(pos_t19); Serial.print(": "); Serial.println(data[19],DEC);
+     Serial.print(pos_t20); Serial.print(": "); Serial.println(data[20],DEC);
+     Serial.print(pos_t21); Serial.print(": "); Serial.println(data[21],BIN);
      #endif
      
      // Increment count
      count++;
-     if(count>10000) { count = 0; } // Mostly for debugging.
+     if(count>1000) { count = 0; } // Mostly for debugging.
+
+     // Safely eject if Button1 is pressed for X seconds
+     EjectRequestCheckAndHandler(); // Checks if the users wants to eject the SD card and handles this process
      
      // Delay before next loop iteration
      delay(1000*PRIMARY_DELAY_SECONDS); // Delay between main loop cycles
@@ -325,22 +368,31 @@ int start = 0;
    if(SD_CARD_IS_PRESENT) {error_status |= 0; } else { error_status |= 1; }
    
    #ifdef USING_SERIAL
-   Serial.print(count);
-   Serial.print(": error_status: ");
-   Serial.println(error_status);
+   if(error_status) {
+     Serial.print(count);
+     Serial.print(": error_status: ");
+     Serial.println(error_status);
+   }
    #endif
    
    if (!error_status) {
      // File opened
-     dataFile.print(count);
-     dataFile.println(": line of data");
+     //dataFile.print(count);
+     //dataFile.println(": line of data");
+     for (int j = 0; j < (DATA_LENGTH-1);j++)
+     {
+       dataFile.print(data[j],DEC);
+       dataFile.print(DELIMITER_CHAR);
+     }
+     dataFile.print(data[DATA_LENGTH-1],DEC); // So as not to print the delimiter at the end of each line
+     dataFile.println("");
      dataFile.close();
      
      // Print to Serial Monitor
-     #ifdef USING_SERIAL
-     Serial.print(count);
-     Serial.println(": line of data");
-     #endif
+     //#ifdef USING_SERIAL
+     //Serial.print(count);
+     //Serial.println(": line of data");
+     //#endif
      
    } else {
      
@@ -389,11 +441,11 @@ int start = 0;
 
   
  // Updates olddata to be the previous cycle's data
- void MoveDataToOldData( void ) {
+ /*void MoveDataToOldData( void ) {
    for( byte i = 0 ; i < DATA_LENGTH ; ++i ){
      olddata[i] = data[i];
    }
- }
+ }*/
 
   
   
