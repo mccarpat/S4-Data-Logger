@@ -1,7 +1,7 @@
 #define VERSION "0.0.7"
 #define VERSIONDATE "07-30-16"
 //#define __AVR_ATmega328P__
-
+b
 
 /*   CURRENT ISSUE half fixed, reset button issued, must code below handling. flashes red/green waiting for user rest on button 3.
    
@@ -63,7 +63,7 @@
  *  
  *  --- Changelog -------------------
   * v0.0.7 - PJM -> 07-30-16 - (see "issues" in code) (WOrking on)
- *  v0.0.6 - PJM - (working on adding a watchdog timer reset so it can continue to write after an eject, then adding formatting)
+ *  v0.0.6 - PJM - (working on adding a watchdog timer reset so it can continue to write after an eject, then adding formatting) (chose to not add formatting)
  *  v0.0.5 - PJM -> 07-29-16 - SD Card writing (dummy data) and safe eject
  *  v0.0.4 - PJM - (working on data compression and delta tolerance) (not done, skipping)
  *  v0.0.3 - PJM - Setting up usage of data[...]
@@ -105,6 +105,7 @@
  #define DATA_LENGTH 20 // Data array has 20 elements
  #define LOG_FILE_NAME "datalog.txt"
  #define SAFE_SDCARD_EJECT_BUTTON_HOLD_SECONDS 3 // 3 seconds of holding button1 to safely eject
+ #define FORMAT_SDCARD_BUTTON_HOLD_SECONDS 3 // 3 seconds of holding button2 to format the card
  // #define DUPLICATE 'x' // Character used to represent duplicate data from a previous write cycle
  //#define tolerance_Voltage0 5 // If the new reading is within X of the previously recorded reading, do not write new data
  //#define tolerance_Voltage1 5 
@@ -149,6 +150,7 @@
  void WriteDataToSDCard( void ); // Writes data[...] to the SD card, and handles error loop (light codes) if necessary
  void HandleSDCardSwap( void ); // Handles waiting for the SD card to be ejected and another one inserted.
  void EjectRequestCheckAndHandler( void ); // Checks if the users wants to eject the SD card and handles this process
+ void FormatSDCard( void ); // Delete all files on the SD card
  
  // Initialize variables
  long count = 0;
@@ -367,6 +369,20 @@
    //}
     
  }
+
+
+
+
+ // Delete all files on the SD card
+ //void FormatSDCard( void ) { 
+ //}
+
+
+
+
+
+
+ 
      
 
 // **************************************************************************************
@@ -471,9 +487,68 @@
    // Wait until card is ejected
    GREEN_LED_ON;
    RED_LED_OFF;
-   while(SD_CARD_IS_PRESENT) {
+   while(SD_CARD_IS_PRESENT && GoodToEject) {
      // We're just waiting for the card to be ejected. That's it. Hopefully somebody ejects it.
+     // Or they can press Button1 to cancel.
+     
      delay(500);
+     
+     if(Button1_Pressed()) { // Cancel the swap
+      GoodToEject = 0;
+      GREEN_LED_OFF;
+      delay(500);
+      GREEN_LED_ON;
+      delay(500); // Hopefully they stop pressing the button at this point
+      return;
+     }
+   
+
+     /*
+      if(Button2_Pressed()) { // Hold to format card
+      for( byte i = 0 ; i < FORMAT_SDCARD_BUTTON_HOLD_SECONDS ; ++i ){
+         RED_LED_ON;
+         delay(1000);
+         GoodToEject = 1;
+         if(!Button2_Pressed()) {
+           // Button 2 is not held down!
+           GoodToEject = 0;
+           RED_LED_OFF;
+           GREEN_LED_ON;
+           delay(500);
+           GREEN_LED_OFF;
+           delay(500);
+           GREEN_LED_ON;
+           delay(500);
+           return;
+         }
+       }
+       if(GoodToEject) {
+         // Button 2 was held for X seconds
+         // Format the card here
+         // **** FORMAT CODE HERE ****
+         FormatSDCard();
+         RED_LED_OFF;
+         GREEN_LED_OFF;
+         delay(500);
+         RED_LED_ON;
+         GREEN_LED_ON;
+         delay(500);
+         RED_LED_OFF;
+         GREEN_LED_OFF;
+         delay(500);
+         RED_LED_ON;
+         GREEN_LED_ON;
+         delay(500);
+         RED_LED_OFF;
+         GREEN_LED_OFF;
+         delay(500);
+         RED_LED_ON;
+         GREEN_LED_ON;
+         delay(500);
+       }
+       //GoodToEject = 0;
+     }
+     */
    }
    
    // Wait until a card is inserted
@@ -485,15 +560,14 @@
      delay(500);
    }
    
-   // Do you have to reinitialize the SD card? May need to force a watchdog timer reset.
    RED_LED_OFF;
    GREEN_LED_OFF;
    
-   // Only way to reinitialize the file, without modifying sd.cpp, is a soft reset
-   //SoftReset();
-   // * * * * * HERE IS WHERE THINGS HAVE BROKEN ^ ^ ^
+   if(!GoodToEject) { return; }
    
    while(1) {
+     // User must manually reset the device at this point
+     // Only way to reinitialize the file without modifying sd.cpp
      GREEN_LED_ON;
      RED_LED_OFF;
      delay(500);
@@ -524,6 +598,8 @@
        if(GoodToEject) {
            // Good to eject, button was pressed each check over X seconds
            HandleSDCardSwap(); // Handles waiting for the SD card to be ejected and another one inserted.
+           GREEN_LED_OFF;
+           RED_LED_OFF;
          } else {
            // Not good to eject, button wasn't held, do nothing
        }
